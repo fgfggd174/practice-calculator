@@ -1,16 +1,16 @@
 import sys
 import math
 import json
-import csv  # <-- добавлен импорт csv
+import csv
 import logging
 
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QLineEdit, QComboBox, QPushButton, QTableWidget,
     QTableWidgetItem, QHeaderView, QMessageBox, QStackedWidget,
-    QSplitter, QGroupBox, QFileDialog  # <-- добавлен QFileDialog
+    QSplitter, QGroupBox, QFileDialog
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QSettings
 from PyQt5.QtGui import QDoubleValidator
 
 from database import DatabaseManager
@@ -32,11 +32,33 @@ class MainWindow(QMainWindow):
         self.resize(1000, 700)
         self.setMinimumSize(900, 600)
 
+        # Инициализация настроек
+        self.settings = QSettings("MyCompany", "AreaPerimeterCalc")
+
         # Инициализация БД
         self.db = DatabaseManager()
 
         self._setup_ui()
         self._bind_signals()
+
+        # Восстановление геометрии и состояния
+        self.restore_geometry()
+
+        # Восстановление выбранной фигуры и единиц
+        figure_index = self.settings.value("figure_index", 0, type=int)
+        if 0 <= figure_index < self.figure_combo.count():
+            self.figure_combo.setCurrentIndex(figure_index)
+
+        unit_index = self.settings.value("unit_index", 0, type=int)
+        if 0 <= unit_index < self.unit_combo.count():
+            self.unit_combo.setCurrentIndex(unit_index)
+
+        # ---------- Восстановление темы ----------
+        theme = self.settings.value("theme", "light")
+        self.apply_theme(theme)
+        idx = 0 if theme == "light" else 1
+        self.theme_combo.setCurrentIndex(idx)
+
         self._refresh_history()
 
         logging.info("Приложение запущено.")
@@ -94,6 +116,19 @@ class MainWindow(QMainWindow):
         result_layout.addWidget(self.lbl_area)
         result_layout.addWidget(self.lbl_perimeter)
         left_layout.addWidget(result_group)
+
+        # ---------- Блок настроек (тема) ----------
+        bonus_group = QGroupBox("Настройки")
+        bonus_layout = QVBoxLayout(bonus_group)
+
+        theme_layout = QHBoxLayout()
+        theme_layout.addWidget(QLabel("Тема:"))
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(["Светлая", "Тёмная"])
+        theme_layout.addWidget(self.theme_combo)
+        bonus_layout.addLayout(theme_layout)
+
+        left_layout.addWidget(bonus_group)
         left_layout.addStretch()
 
         # Правая панель (история)
@@ -115,16 +150,13 @@ class MainWindow(QMainWindow):
         self.history_table.setAlternatingRowColors(True)
         right_layout.addWidget(self.history_table)
 
-        # ---------- Кнопки управления историей + экспорт/импорт ----------
+        # Кнопки управления историей + экспорт/импорт
         hist_btn_layout = QHBoxLayout()
-
-        # Кнопки управления историей
         self.btn_delete_selected = QPushButton("Удалить выбранную")
         self.btn_clear_history = QPushButton("Очистить всё")
         hist_btn_layout.addWidget(self.btn_delete_selected)
         hist_btn_layout.addWidget(self.btn_clear_history)
 
-        # Кнопки экспорта и импорта (добавлены в этом коммите)
         self.btn_export_csv = QPushButton("Экспорт CSV")
         self.btn_export_json = QPushButton("Экспорт JSON")
         self.btn_import_csv = QPushButton("Импорт CSV")
@@ -142,7 +174,8 @@ class MainWindow(QMainWindow):
         splitter.setSizes([450, 550])
         main_layout.addWidget(splitter)
 
-        self._apply_styles()
+        # Применяем стиль по умолчанию (светлый)
+        self._apply_styles("light")
 
     def _create_param_widgets(self):
         self.input_fields = {}
@@ -171,28 +204,90 @@ class MainWindow(QMainWindow):
             self.params_stack.addWidget(widget)
         self.params_stack.setCurrentIndex(0)
 
-    def _apply_styles(self):
-        style = """
-        QMainWindow { background-color: #f0f2f5; }
-        QGroupBox { font-weight: bold; border: 1px solid #ccc; border-radius: 6px; margin-top: 8px; }
-        QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
-        QPushButton { background-color: #4CAF50; color: white; border: none; padding: 8px 16px; border-radius: 4px; font-weight: bold; }
-        QPushButton:hover { background-color: #45a049; }
-        QPushButton:pressed { background-color: #3d8b40; }
-        QPushButton#calcBtn { background-color: #2196F3; }
-        QPushButton#calcBtn:hover { background-color: #1e87db; }
-        QPushButton#calcBtn:pressed { background-color: #1a78c2; }
-        QLineEdit { border: 1px solid #ccc; border-radius: 4px; padding: 6px; background-color: white; }
-        QLineEdit:focus { border: 2px solid #2196F3; }
-        QComboBox { border: 1px solid #ccc; border-radius: 4px; padding: 5px; background-color: white; }
-        QComboBox:on { border: 2px solid #2196F3; }
-        QTableWidget { gridline-color: #d0d0d0; alternate-background-color: #fafafa; selection-background-color: #cce5ff; }
-        QTableWidget::item:selected { background-color: #b3d9ff; }
-        QHeaderView::section { background-color: #e0e0e0; padding: 4px; border: 1px solid #ccc; font-weight: bold; }
-        QLabel#mainTitle { font-size: 20px; font-weight: bold; color: #333; padding: 10px 0; }
-        QLabel#historyTitle { font-size: 16px; font-weight: bold; color: #333; }
-        QSplitter::handle { background-color: #d0d0d0; width: 2px; }
-        """
+    # ---------- Обновлённый метод _apply_styles с поддержкой тем ----------
+    def _apply_styles(self, theme="light"):
+        """Применяет QSS стили в зависимости от темы."""
+        if theme == "light":
+            style = """
+            QMainWindow { background-color: #f0f2f5; }
+            QGroupBox { font-weight: bold; border: 1px solid #ccc; border-radius: 6px; margin-top: 8px; }
+            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
+            QPushButton { background-color: #4CAF50; color: white; border: none; padding: 8px 16px; border-radius: 4px; font-weight: bold; }
+            QPushButton:hover { background-color: #45a049; }
+            QPushButton:pressed { background-color: #3d8b40; }
+            QPushButton#calcBtn { background-color: #2196F3; }
+            QPushButton#calcBtn:hover { background-color: #1e87db; }
+            QPushButton#calcBtn:pressed { background-color: #1a78c2; }
+            QLineEdit { border: 1px solid #ccc; border-radius: 4px; padding: 6px; background-color: white; }
+            QLineEdit:focus { border: 2px solid #2196F3; }
+            QComboBox { border: 1px solid #ccc; border-radius: 4px; padding: 5px; background-color: white; }
+            QComboBox:on { border: 2px solid #2196F3; }
+            QTableWidget { gridline-color: #d0d0d0; background-color: white; alternate-background-color: #fafafa; }
+            QTableWidget::item { background-color: white; color: black; }
+            QTableWidget::item:selected { background-color: #cce5ff; color: black; }
+            QHeaderView::section { background-color: #e0e0e0; padding: 4px; border: 1px solid #ccc; font-weight: bold; color: black; }
+            QTableCornerButton::section { background-color: #e0e0e0; border: 1px solid #ccc; }
+            QLabel#mainTitle { font-size: 20px; font-weight: bold; color: #333; padding: 10px 0; }
+            QLabel#historyTitle { font-size: 16px; font-weight: bold; color: #333; }
+            QSplitter::handle { background-color: #d0d0d0; width: 2px; }
+            QScrollBar:vertical { background: #f0f0f0; width: 12px; border-radius: 6px; }
+            QScrollBar::handle:vertical { background: #c0c0c0; border-radius: 6px; min-height: 20px; }
+            QScrollBar::handle:vertical:hover { background: #a0a0a0; }
+            QScrollBar:horizontal { background: #f0f0f0; height: 12px; border-radius: 6px; }
+            QScrollBar::handle:horizontal { background: #c0c0c0; border-radius: 6px; min-width: 20px; }
+            QScrollBar::handle:horizontal:hover { background: #a0a0a0; }
+            """
+        else:  # dark
+            style = """
+            QMainWindow { background-color: #2b2b2b; }
+            QGroupBox { font-weight: bold; border: 1px solid #555; border-radius: 6px; margin-top: 8px; color: #eee; }
+            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
+            QPushButton { background-color: #3a3a3a; color: #eee; border: 1px solid #555; padding: 8px 16px; border-radius: 4px; font-weight: bold; }
+            QPushButton:hover { background-color: #4a4a4a; }
+            QPushButton:pressed { background-color: #2a2a2a; }
+            QPushButton#calcBtn { background-color: #1e88e5; }
+            QPushButton#calcBtn:hover { background-color: #42a5f5; }
+            QPushButton#calcBtn:pressed { background-color: #1565c0; }
+            QLineEdit { border: 1px solid #555; border-radius: 4px; padding: 6px; background-color: #3c3c3c; color: #eee; }
+            QLineEdit:focus { border: 2px solid #1e88e5; }
+            QComboBox { border: 1px solid #555; border-radius: 4px; padding: 5px; background-color: #3c3c3c; color: #eee; }
+            QComboBox:on { border: 2px solid #1e88e5; }
+            QTableWidget {
+                gridline-color: #555;
+                background-color: #2b2b2b;
+                alternate-background-color: #333333;
+                color: #eee;
+            }
+            QTableWidget::item {
+                background-color: #2b2b2b;
+                color: #eee;
+            }
+            QTableWidget::item:selected {
+                background-color: #1e88e5;
+                color: white;
+            }
+            QHeaderView::section {
+                background-color: #3a3a3a;
+                color: #eee;
+                padding: 4px;
+                border: 1px solid #555;
+                font-weight: bold;
+            }
+            QTableCornerButton::section {
+                background-color: #3a3a3a;
+                border: 1px solid #555;
+            }
+            QLabel#mainTitle { font-size: 20px; font-weight: bold; color: #eee; padding: 10px 0; }
+            QLabel#historyTitle { font-size: 16px; font-weight: bold; color: #eee; }
+            QSplitter::handle { background-color: #555; width: 2px; }
+            QLabel { color: #eee; }
+            QScrollBar:vertical { background: #3a3a3a; width: 12px; border-radius: 6px; }
+            QScrollBar::handle:vertical { background: #5a5a5a; border-radius: 6px; min-height: 20px; }
+            QScrollBar::handle:vertical:hover { background: #7a7a7a; }
+            QScrollBar:horizontal { background: #3a3a3a; height: 12px; border-radius: 6px; }
+            QScrollBar::handle:horizontal { background: #5a5a5a; border-radius: 6px; min-width: 20px; }
+            QScrollBar::handle:horizontal:hover { background: #7a7a7a; }
+            """
         self.setStyleSheet(style)
 
     def _bind_signals(self):
@@ -201,18 +296,29 @@ class MainWindow(QMainWindow):
         self.btn_clear.clicked.connect(self._clear_fields)
         self.btn_delete_selected.clicked.connect(self._delete_selected_history)
         self.btn_clear_history.clicked.connect(self._clear_all_history)
-
-        # ---------- Привязка кнопок экспорта/импорта ----------
         self.btn_export_csv.clicked.connect(lambda: self._export_data("csv"))
         self.btn_export_json.clicked.connect(lambda: self._export_data("json"))
         self.btn_import_csv.clicked.connect(lambda: self._import_data("csv"))
         self.btn_import_json.clicked.connect(lambda: self._import_data("json"))
+
+        # ---------- Привязка сигнала изменения темы ----------
+        self.theme_combo.currentTextChanged.connect(self._on_theme_changed)
 
     def _on_figure_changed(self, index):
         self.params_stack.setCurrentIndex(index)
         self._clear_fields()
         self.lbl_area.setText("Площадь: —")
         self.lbl_perimeter.setText("Периметр: —")
+
+    # ---------- Новые методы для работы с темой ----------
+    def _on_theme_changed(self, theme_text):
+        theme = "light" if theme_text == "Светлая" else "dark"
+        self.apply_theme(theme)
+        self.settings.setValue("theme", theme)
+
+    def apply_theme(self, theme):
+        self._apply_styles(theme)
+        self.current_theme = theme
 
     def _get_current_figure(self):
         return self.figure_combo.currentText()
@@ -350,31 +456,26 @@ class MainWindow(QMainWindow):
             self.db.clear_history()
             self._refresh_history()
 
-    # ---------- НОВЫЕ МЕТОДЫ ДЛЯ ЭКСПОРТА/ИМПОРТА ----------
     def _export_data(self, format_type):
-        """Экспорт истории в CSV или JSON."""
         records = self.db.get_all_records()
         if not records:
             QMessageBox.information(self, "Экспорт", "Нет данных для экспорта.")
             return
-
         path, _ = QFileDialog.getSaveFileName(
             self, "Сохранить как", "",
             f"{format_type.upper()} files (*.{format_type})"
         )
         if not path:
             return
-
         try:
             if format_type == "csv":
                 with open(path, 'w', newline='', encoding='utf-8') as f:
                     writer = csv.writer(f)
-                    # Заголовки
                     writer.writerow(["figure_type", "params", "unit", "area", "perimeter", "timestamp"])
                     for rec in records:
                         writer.writerow([
                             rec['figure_type'],
-                            rec['params'],  # уже JSON-строка
+                            rec['params'],
                             rec['unit'],
                             rec['area'],
                             rec['perimeter'],
@@ -382,24 +483,19 @@ class MainWindow(QMainWindow):
                         ])
             elif format_type == "json":
                 with open(path, 'w', encoding='utf-8') as f:
-                    # Преобразуем sqlite3.Row в dict для сериализации
                     json.dump([dict(rec) for rec in records], f, ensure_ascii=False, indent=2)
-
             QMessageBox.information(self, "Экспорт", f"Данные успешно экспортированы в {format_type.upper()}.")
-            logging.info(f"Экспорт в {format_type.upper()} выполнен: {path}")
         except Exception as e:
             logging.error(f"Ошибка экспорта: {e}")
             QMessageBox.critical(self, "Ошибка", f"Не удалось экспортировать: {e}")
 
     def _import_data(self, format_type):
-        """Импорт истории из CSV или JSON."""
         path, _ = QFileDialog.getOpenFileName(
             self, "Выберите файл", "",
             f"{format_type.upper()} files (*.{format_type})"
         )
         if not path:
             return
-
         try:
             if format_type == "csv":
                 with open(path, 'r', encoding='utf-8') as f:
@@ -410,25 +506,36 @@ class MainWindow(QMainWindow):
                         area = float(row['area']) if row['area'] else None
                         perimeter = float(row['perimeter']) if row['perimeter'] else None
                         self.db.insert_record(row['figure_type'], params, unit, area, perimeter)
-
             elif format_type == "json":
                 with open(path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     for rec in data:
                         self.db.insert_record(
-                            rec['figure_type'],
-                            json.loads(rec['params']),
-                            rec['unit'],
-                            rec['area'],
-                            rec['perimeter']
+                            rec['figure_type'], json.loads(rec['params']),
+                            rec['unit'], rec['area'], rec['perimeter']
                         )
-
             self._refresh_history()
             QMessageBox.information(self, "Импорт", f"Данные успешно импортированы из {format_type.upper()}.")
-            logging.info(f"Импорт из {format_type.upper()} выполнен: {path}")
         except Exception as e:
             logging.error(f"Ошибка импорта: {e}")
             QMessageBox.critical(self, "Ошибка", f"Не удалось импортировать: {e}")
+
+    def save_geometry(self):
+        self.settings.setValue("geometry", self.saveGeometry())
+        self.settings.setValue("windowState", self.saveState())
+        self.settings.setValue("figure_index", self.figure_combo.currentIndex())
+        self.settings.setValue("unit_index", self.unit_combo.currentIndex())
+        # Сохраняем тему
+        if hasattr(self, 'current_theme'):
+            self.settings.setValue("theme", self.current_theme)
+
+    def restore_geometry(self):
+        geometry = self.settings.value("geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
+        state = self.settings.value("windowState")
+        if state:
+            self.restoreState(state)
 
     def closeEvent(self, event):
         reply = QMessageBox.question(self, "Выход",
@@ -436,6 +543,7 @@ class MainWindow(QMainWindow):
                                       QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
                                       QMessageBox.No)
         if reply == QMessageBox.Yes:
+            self.save_geometry()
             self.db.close()
             logging.info("Приложение закрыто.")
             event.accept()
